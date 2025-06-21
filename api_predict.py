@@ -1,15 +1,18 @@
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 import joblib
 
+# Inicializar API
 app = FastAPI()
 
-# Cargar modelos y codificadores
-model = joblib.load("resource_model.pkl")
+# Cargar modelos y encoders
+model_cat = joblib.load("category_model.pkl")
+model_fmt = joblib.load("format_model.pkl")
 label_encoders = joblib.load("label_encoders.pkl")
-output_classes = joblib.load("output_classes.pkl")
+category_encoder = joblib.load("category_encoder.pkl")
+format_encoder = joblib.load("format_encoder.pkl")
 
+# Input esperado
 class ResourceInput(BaseModel):
     module_title: str
     roadmap_title: str
@@ -20,32 +23,34 @@ class ResourceInput(BaseModel):
     formats: str     # no usado en predicción pero recibido
     total_modules_done: int
 
+# Endpoint de predicción
 @app.post("/predict")
 def predict(input: ResourceInput):
-    input_data = {
-        "module_title": label_encoders["module_title"].transform([input.module_title])[0],
-        "roadmap_title": label_encoders["roadmap_title"].transform([input.roadmap_title])[0],
-        "roadmap_level": input.roadmap_level,
-        "avg_score": input.avg_score,
-        "type_assessment": label_encoders["type_assessment"].transform([input.type_assessment])[0],
-        "total_modules_done": input.total_modules_done
-    }
+    # Manejar valores no vistos con "unknown"
+    def encode_input(col, value):
+        le = label_encoders[col]
+        if value not in le.classes_:
+            return le.transform(["unknown"])[0]
+        return le.transform([value])[0]
 
-    X = [[
-        input_data["module_title"],
-        input_data["roadmap_title"],
-        input_data["roadmap_level"],
-        input_data["avg_score"],
-        input_data["type_assessment"],
-        input_data["total_modules_done"]
-    ]]
+    input_data = [
+        encode_input("module_title", input.module_title),
+        encode_input("roadmap_title", input.roadmap_title),
+        input.roadmap_level,
+        input.avg_score,
+        encode_input("type_assessment", input.type_assessment),
+        input.total_modules_done
+    ]
 
-    prediction = model.predict(X)[0]
-    n_cat = len(output_classes["categories"])
-    cat_preds = [output_classes["categories"][i] for i, val in enumerate(prediction[:n_cat]) if val == 1]
-    fmt_preds = [output_classes["formats"][i] for i, val in enumerate(prediction[n_cat:]) if val == 1]
+    # Predecir
+    cat_pred = model_cat.predict([input_data])[0]
+    fmt_pred = model_fmt.predict([input_data])[0]
+
+    # Decodificar
+    predicted_category = category_encoder.inverse_transform([cat_pred])[0]
+    predicted_format = format_encoder.inverse_transform([fmt_pred])[0]
 
     return {
-        "predicted_categories": cat_preds,
-        "predicted_formats": fmt_preds
+        "predicted_category": predicted_category,
+        "predicted_format": predicted_format
     }
